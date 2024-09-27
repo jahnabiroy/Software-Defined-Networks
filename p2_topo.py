@@ -15,7 +15,6 @@ class CustomTopo(Topo):
         s3 = self.addSwitch('s3')
         s4 = self.addSwitch('s4')
 
-
         # Create 4 hosts
         h1 = self.addHost('h1')
         h2 = self.addHost('h2')
@@ -34,6 +33,35 @@ class CustomTopo(Topo):
         self.addLink(s3, s4)
         self.addLink(s4, s1)
 
+def construct_spanning_tree(topo):
+    """Construct a spanning tree from the given topology using Prim's algorithm."""
+    nodes = list(topo.nodes())
+    edges = list(topo.links())
+    if not nodes:
+        return []
+
+    # Initialize the spanning tree with the first node
+    spanning_tree = []
+    connected_nodes = {nodes[0]}
+    remaining_nodes = set(nodes[1:])
+
+    while remaining_nodes:
+        min_edge = None
+        for edge in edges:
+            if (edge[0] in connected_nodes and edge[1] in remaining_nodes) or \
+               (edge[1] in connected_nodes and edge[0] in remaining_nodes):
+                if min_edge is None or edge < min_edge:
+                    min_edge = edge
+
+        if min_edge is None:
+            raise ValueError("The graph is not connected")
+
+        spanning_tree.append(min_edge)
+        connected_nodes.update(min_edge)
+        remaining_nodes.difference_update(min_edge)
+
+    return spanning_tree
+
 def run():
     """Create the network, start it, and enter the CLI."""
     topo = CustomTopo()
@@ -41,9 +69,20 @@ def run():
     net.addController('c0', controller=RemoteController, ip="127.0.0.1", protocol='tcp', port=6633)
     net.build()
     net.start()
+
+    # Construct the spanning tree
+    spanning_tree = construct_spanning_tree(topo)
+    info('*** Spanning Tree:\n')
+    for edge in spanning_tree:
+        info(f'{edge}\n')
+
+    # Save the spanning tree to a file for the controller to read
+    with open('/tmp/spanning_tree.txt', 'w') as f:
+        for edge in spanning_tree:
+            f.write(f'{edge[0]} {edge[1]}\n')
+
     info('*** Running CLI\n')
     CLI(net)
-
 
     info('*** Stopping network\n')
     net.stop()

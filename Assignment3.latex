@@ -47,11 +47,7 @@ stuck in loops and con-structing spanning trees are one efficient
 mechanism to prevent flooding. Consider the learning
 \end{quote}
 
-\includegraphics[width=2.93472in,height=1.24444in]{vertopal_224dc419d0d54b6db94e82cbac1dc6f2/media/image1.png}
-
 Figure 1: Network Topology
-
-1
 
 \begin{quote}
 switch implemented in Section 1. You should realize that
