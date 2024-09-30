@@ -26,8 +26,15 @@ class LearningSwitch(app_manager.RyuApp):
         self.host_to_port = {}
 
         # Set up logging to a file
-        log_file = "ryu_app.log"
+        log_file = "p2.log"
         # clean_log_file(log_file)
+        with open(log_file, "w"):
+            pass
+
+        self.logger.propagate = False
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
+
         handler = RotatingFileHandler(
             log_file, maxBytes=10 * 1024 * 1024, backupCount=5
         )
@@ -86,6 +93,9 @@ class LearningSwitch(app_manager.RyuApp):
         dpid = datapath.id
 
         self.host_to_switch.setdefault(dpid, set())
+
+        self.forwarding_table[dpid][src] = in_port  #
+
         out_port = ofproto.OFPP_FLOOD
         if dst in self.forwarding_table[dpid]:
             out_port = self.forwarding_table[dpid][dst]
@@ -152,7 +162,7 @@ class LearningSwitch(app_manager.RyuApp):
             else:
                 self.logger.info("Host %s does not have mac", host.mac)
 
-        print(self.host_to_switch)
+        # print(self.host_to_switch)
         links_list = get_all_link(self.topology_api_app)
         self.links = {}
         self.switch_ids = set()
