@@ -24,7 +24,7 @@ class LearningSwitch(app_manager.RyuApp):
         self.spanning_tree = []
         self.forwarding_table = {}
         self.host_to_port = {}
-
+        self.blocked_ports = {}
         # Set up logging to a file
         log_file = "p2.log"
         # clean_log_file(log_file)
@@ -93,9 +93,14 @@ class LearningSwitch(app_manager.RyuApp):
         dpid = datapath.id
 
         self.host_to_switch.setdefault(dpid, set())
-
+        self.forwarding_table.setdefault(dpid, {})
         self.forwarding_table[dpid][src] = in_port  #
-
+        
+        for switch in self.switch_ids:
+            if switch != dpid:
+                if src not in self.forwarding_table[switch]:
+                    self.forwarding_table[switch][src] = self.forwarding_table[switch][dpid]
+        
         out_port = ofproto.OFPP_FLOOD
         if dst in self.forwarding_table[dpid]:
             out_port = self.forwarding_table[dpid][dst]
@@ -108,24 +113,23 @@ class LearningSwitch(app_manager.RyuApp):
         if out_port != ofproto.OFPP_FLOOD:
             actions = [parser.OFPActionOutput(out_port)]
         else:
-            # Flood only to ports in the spanning tree
+            # Flood only to ports in the spanning tree, excluding blocked ports
             for port in self.ports_on_switch.get(dpid, []):
-                # if port != in_port:
-                actions.append(parser.OFPActionOutput(port))
+                if port != in_port and port not in self.blocked_ports.get(dpid, []):
+                    actions.append(parser.OFPActionOutput(port))
 
-        # Install a flow to avoid packet_in next time
-        # if out_port != ofproto.OFPP_FLOOD:
-        #     match = parser.OFPMatch(in_port=in_port, eth_type=eth.ethertype, eth_dst=dst)
-        #     if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-        #         self.add_flow(datapath, 1, match, actions, msg.buffer_id)
-        #         return
-        #     else:
-        #         self.add_flow(datapath, 1, match, actions)
+        if out_port != ofproto.OFPP_FLOOD:
+            match = parser.OFPMatch(in_port=in_port, eth_type=eth.ethertype, eth_dst=dst)
+            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
+                return
+            else:
+                self.add_flow(datapath, 1, match, actions)
 
         # Install reverse flow for bidirectional communication
-        # reverse_match = parser.OFPMatch(in_port=out_port, eth_type=eth.ethertype, eth_dst=src)
-        # reverse_actions = [parser.OFPActionOutput(in_port)]
-        # self.add_flow(datapath, 1, reverse_match, reverse_actions)
+        reverse_match = parser.OFPMatch(in_port=out_port, eth_type=eth.ethertype, eth_dst=src)
+        reverse_actions = [parser.OFPActionOutput(in_port)]
+        self.add_flow(datapath, 1, reverse_match, reverse_actions)
 
         # Construct packet out message and send it
         out = parser.OFPPacketOut(
@@ -145,8 +149,8 @@ class LearningSwitch(app_manager.RyuApp):
         host_list = get_host(self.topology_api_app, None)
 
         # Clear previous topology data
-        self.host_to_switch.clear()
-        self.host_to_port.clear()
+        # self.host_to_switch.clear()
+        # self.host_to_port.clear()
 
         for host in host_list:
             if host.mac:
@@ -208,6 +212,7 @@ class LearningSwitch(app_manager.RyuApp):
                 for neighbor, port in self.links.get(switch, {}).items():
                     if neighbor not in connected_switches:
                         new_edges.append((switch, neighbor))
+                    
 
             if not new_edges:
                 break  # No more edges to add, graph might be disconnected
@@ -264,8 +269,15 @@ class LearningSwitch(app_manager.RyuApp):
             self.ports_on_switch[switch] = list(
                 set(self.forwarding_table[switch].values())
             )
+        
+        for switch1 in self.switch_ids:
+            for switch2 in self.links[switch1]:
+                if self.links[switch1][switch2] != self.forwarding_table[switch1][switch2]:
+                    self.blocked_ports.setdefault(switch1, set()).add(self.links[switch1][switch2])
+                    self.blocked_ports.setdefault(switch2, set()).add(self.links[switch2][switch1])
 
         self.logger.info("Ports on each switch: %s", self.ports_on_switch)
         self.logger.info("Forwarding Table: %s", self.forwarding_table)
         self.logger.info("Host to Switch: %s", self.host_to_switch)
         self.logger.info("Host to Port: %s", self.host_to_port)
+        self.logger.info("Blocked Ports: %s", self.blocked_ports)
