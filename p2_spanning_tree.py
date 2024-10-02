@@ -11,7 +11,7 @@ from ryu.topology.api import *
 from ryu.lib.packet import ipv4
 from ryu.lib.packet import ipv6  # Add this line
 from time import sleep
-
+from ryu.lib.packet import ether_types
 
 class LearningSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -50,8 +50,6 @@ class LearningSwitch(app_manager.RyuApp):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-
-        # Install a table-miss flow entry
         match = parser.OFPMatch()
         actions = [
             parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)
@@ -64,17 +62,10 @@ class LearningSwitch(app_manager.RyuApp):
 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         if buffer_id:
-            mod = parser.OFPFlowMod(
-                datapath=datapath,
-                buffer_id=buffer_id,
-                priority=priority,
-                match=match,
-                instructions=inst,
-            )
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id, priority=priority, match=match, instructions=inst)
         else:
-            mod = parser.OFPFlowMod(
-                datapath=datapath, priority=priority, match=match, instructions=inst
-            )
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
+
         datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -92,46 +83,34 @@ class LearningSwitch(app_manager.RyuApp):
         src = eth.src
         dpid = datapath.id
 
-        self.host_to_switch.setdefault(dpid, set())
-        self.forwarding_table.setdefault(dpid, {})
-        self.forwarding_table[dpid][src] = in_port  #
-        
-        for switch in self.switch_ids:
-            if switch != dpid:
-                if src not in self.forwarding_table[switch]:
-                    self.forwarding_table[switch][src] = self.forwarding_table[switch][dpid]
-        
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            return
+
         out_port = ofproto.OFPP_FLOOD
         if dst in self.forwarding_table[dpid]:
             out_port = self.forwarding_table[dpid][dst]
 
-        if out_port != ofproto.OFPP_FLOOD:
-            self.logger.info("Calculated output port: %s", out_port)
-            self.logger.info("DPID: %s, Destination: %s, Source: %s", dpid, dst, src)
+        # if out_port != ofproto.OFPP_FLOOD:
+        #     self.logger.info("DPID: %s, Destination: %s, Source: %s, Out Port: %s, In Port: %s", dpid, dst, src, out_port, in_port)
 
         actions = []
         if out_port != ofproto.OFPP_FLOOD:
             actions = [parser.OFPActionOutput(out_port)]
         else:
-            # Flood only to ports in the spanning tree, excluding blocked ports
-            for port in self.ports_on_switch.get(dpid, []):
+            ports = [port.port_no for port in datapath.ports.values()]
+            for port in ports:
                 if port != in_port and port not in self.blocked_ports.get(dpid, []):
                     actions.append(parser.OFPActionOutput(port))
 
         if out_port != ofproto.OFPP_FLOOD:
-            match = parser.OFPMatch(in_port=in_port, eth_type=eth.ethertype, eth_dst=dst)
+            match = parser.OFPMatch(in_port=in_port, eth_src = src ,eth_dst=dst)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 1, match, actions, msg.buffer_id)
                 return
             else:
                 self.add_flow(datapath, 1, match, actions)
+            return
 
-        # Install reverse flow for bidirectional communication
-        reverse_match = parser.OFPMatch(in_port=out_port, eth_type=eth.ethertype, eth_dst=src)
-        reverse_actions = [parser.OFPActionOutput(in_port)]
-        self.add_flow(datapath, 1, reverse_match, reverse_actions)
-
-        # Construct packet out message and send it
         out = parser.OFPPacketOut(
             datapath=datapath,
             buffer_id=msg.buffer_id,
@@ -141,32 +120,15 @@ class LearningSwitch(app_manager.RyuApp):
         )
         datapath.send_msg(out)
 
+    
+
+
+
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev=None):
-        sleep(3)
+        sleep(0.1)
         switch_list = get_switch(self.topology_api_app, None)
         self.switches = [switch.dp.id for switch in switch_list]
-        host_list = get_host(self.topology_api_app, None)
-
-        # Clear previous topology data
-        # self.host_to_switch.clear()
-        # self.host_to_port.clear()
-
-        for host in host_list:
-            if host.mac:
-                self.logger.info(
-                    "Host with mac %s is connected to switch %s",
-                    host.mac,
-                    host.port.dpid,
-                )
-                if host.port.dpid not in self.host_to_switch:
-                    self.host_to_switch[host.port.dpid] = set()
-                self.host_to_switch[host.port.dpid].add(host.mac)
-                self.host_to_port[host.mac] = host.port.port_no
-            else:
-                self.logger.info("Host %s does not have mac", host.mac)
-
-        # print(self.host_to_switch)
         links_list = get_all_link(self.topology_api_app)
         self.links = {}
         self.switch_ids = set()
@@ -180,27 +142,25 @@ class LearningSwitch(app_manager.RyuApp):
             self.links[l.src.dpid][l.dst.dpid] = l.src.port_no
             self.links[l.dst.dpid][l.src.dpid] = l.dst.port_no
 
-        if self.switch_ids:  # Only create spanning tree if we have switches
+        if self.switch_ids:
             self.create_spanning_tree()
         else:
             print("No switches discovered yet. Spanning tree creation deferred.")
+        
+        # self.get_topology_data(self.topology_api_app)
 
     def create_spanning_tree(self):
         if not self.switch_ids:
             self.logger.warning("No switches to create spanning tree.")
             return
 
-        # Step 1: Find edges for the spanning tree
         spt_edges = self.find_spt_edges()
-
-        # Step 2: Use the edges to construct the spanning tree and forwarding table
         self.construct_spt_and_forwarding_table(spt_edges)
 
     def find_spt_edges(self):
         edges = []
         connected_switches = set()
 
-        # Start with an arbitrary switch
         start_switch = next(iter(self.switch_ids))
         connected_switches.add(start_switch)
 
@@ -208,21 +168,19 @@ class LearningSwitch(app_manager.RyuApp):
             new_edges = []
             for switch in list(
                 connected_switches
-            ):  # Create a list to avoid modifying during iteration
+            ):  
                 for neighbor, port in self.links.get(switch, {}).items():
                     if neighbor not in connected_switches:
                         new_edges.append((switch, neighbor))
                     
 
             if not new_edges:
-                break  # No more edges to add, graph might be disconnected
+                break
 
-            # Add the first new edge found
             edges.append(new_edges[0])
             connected_switches.add(new_edges[0][1])
             connected_switches.add(new_edges[0][0])
 
-        # print("Spanning Tree Edges:", edges)
         spt_edges = {}
         for edge in edges:
             if edge[0] not in spt_edges:
@@ -256,16 +214,6 @@ class LearningSwitch(app_manager.RyuApp):
                 bfs(neighbor, switch, switch, port, visited)
 
         for switch in self.switch_ids:
-            self.host_to_switch.setdefault(switch, set())
-            for host_mac in self.host_to_switch[switch]:
-                self.forwarding_table[switch][host_mac] = self.host_to_port[host_mac]
-                for switch2 in self.switch_ids:
-                    if switch2 != switch:
-                        self.forwarding_table[switch2][host_mac] = (
-                            self.forwarding_table[switch2][switch]
-                        )
-
-        for switch in self.switch_ids:
             self.ports_on_switch[switch] = list(
                 set(self.forwarding_table[switch].values())
             )
@@ -276,8 +224,6 @@ class LearningSwitch(app_manager.RyuApp):
                     self.blocked_ports.setdefault(switch1, set()).add(self.links[switch1][switch2])
                     self.blocked_ports.setdefault(switch2, set()).add(self.links[switch2][switch1])
 
-        self.logger.info("Ports on each switch: %s", self.ports_on_switch)
-        self.logger.info("Forwarding Table: %s", self.forwarding_table)
-        self.logger.info("Host to Switch: %s", self.host_to_switch)
-        self.logger.info("Host to Port: %s", self.host_to_port)
-        self.logger.info("Blocked Ports: %s", self.blocked_ports)
+        # self.logger.info("Ports on each switch: %s", self.ports_on_switch)
+        # self.logger.info("Forwarding Table: %s", self.forwarding_table)
+        # self.logger.info("Blocked Ports: %s", self.blocked_ports)
