@@ -4,12 +4,34 @@ from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, set_ev_cl
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
+import logging
+from logging.handlers import RotatingFileHandler
 
 class HubController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
         super(HubController, self).__init__(*args, **kwargs)
+        # Set up logging to a file
+        log_file = "p1_hc.log"
+        # clean_log_file(log_file)
+        with open(log_file, "w"):
+            pass
+
+        self.logger.propagate = False
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
+
+        handler = RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+        )
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
