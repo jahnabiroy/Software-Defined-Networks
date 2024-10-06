@@ -4,13 +4,39 @@ from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, set_ev_cl
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
+from ryu.topology import event, switches
+import logging
+from logging.handlers import RotatingFileHandler
+from ryu.topology.api import get_switch, get_link
 
 class LearningSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
         super(LearningSwitch, self).__init__(*args, **kwargs)
+        self.topology_api_app = self
         self.mac_to_port = {}
+
+        # Set up logging to a file
+        log_file = "p1_ls.log"
+        # clean_log_file(log_file)
+        with open(log_file, "w"):
+            pass
+
+        self.logger.propagate = False
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
+
+        handler = RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+        )
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -56,15 +82,15 @@ class LearningSwitch(app_manager.RyuApp):
         # Learn the source MAC address to avoid flooding next time
         self.mac_to_port[dpid][src] = in_port
 
-        self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
-
         if dst in self.mac_to_port[dpid]:
             out_port = self.mac_to_port[dpid][dst]
         else:
             out_port = ofproto.OFPP_FLOOD
 
-        actions = [parser.OFPActionOutput(out_port)]
-
+        actions = [parser.OFPActionOutput(out_port, 0, in_port) if out_port == ofproto.OFPP_FLOOD else parser.OFPActionOutput(out_port)]
+        # self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+        # self.logger.info("actions %s", actions)
+        # self.logger.info("out_port %s", out_port)
         # Install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_FLOOD:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
@@ -79,3 +105,13 @@ class LearningSwitch(app_manager.RyuApp):
             datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port,
             actions=actions, data=msg.data)
         datapath.send_msg(out)
+    
+    @set_ev_cls(event.EventSwitchEnter)
+    def get_topology_data(self, ev=None):
+        switch_list = get_switch(self.topology_api_app, None)
+        self.switches = [switch.dp.id for switch in switch_list]
+        links_list = get_link(self.topology_api_app, None)
+        self.links=[(link.src.dpid,link.dst.dpid,{'port':link.src.port_no}) for link in links_list]
+        print(self.topology_api_app)
+        self.logger.info("Switches: %s", self.switches)
+        self.logger.info("Links: %s", self.links)
